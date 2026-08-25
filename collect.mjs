@@ -11,6 +11,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Node 18 미만은 내장 fetch가 없어 "전 피드 실패 → 신규 없음"으로 조용히 오진됩니다. 먼저 막습니다.
+const nodeMajor = Number(process.versions.node.split(".")[0]);
+if (nodeMajor < 18) {
+  console.error(`Node 18 이상이 필요합니다 (현재 ${process.version}). https://nodejs.org 에서 LTS를 설치하세요.`);
+  process.exit(1);
+}
+
 // ─────────────────────────────────────────────────────────────
 // 설정 — 이 블록만 고치면 됩니다.
 // ─────────────────────────────────────────────────────────────
@@ -61,6 +68,10 @@ const DATA_DIR = path.join(ROOT, "data");
 const OUT_DIR = path.join(ROOT, "output");
 const SEEN_FILE = path.join(DATA_DIR, "seen-urls.json");
 const ITEMS_FILE = path.join(DATA_DIR, "items.jsonl");
+
+// CLI로도 프리셋 전환 가능: node collect.mjs --preset skill-launch (소스 수정 불필요)
+const presetArg = process.argv.indexOf("--preset");
+if (presetArg !== -1 && process.argv[presetArg + 1]) CONFIG.preset = process.argv[presetArg + 1];
 
 const match = PRESETS[CONFIG.preset];
 if (!match) {
@@ -115,8 +126,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const seen = loadSeen();
 const collected = []; // 이번 실행에서 새로 발견한 것
 const now = new Date();
-const today = now.toISOString().slice(0, 10);
+// 파일명 날짜도 로컬 기준 — toISOString()은 UTC라 KST 새벽 실행 시 전날 파일에 붙는다.
+const today = now.toLocaleDateString("sv-SE");
 const hhmm = now.toTimeString().slice(0, 5);
+let okFeeds = 0;
 
 for (const feed of CONFIG.feeds) {
   try {
@@ -132,6 +145,7 @@ for (const feed of CONFIG.feeds) {
       collected.push({ feed: feed.name, ...it });
       added++;
     }
+    okFeeds++;
     console.log(`${feed.name}: 전체 ${items.length} · 매칭 ${matched} · 신규 ${added}`);
   } catch (e) {
     // 피드 하나가 죽어도 나머지는 계속 — 실패는 표시만 하고 넘어갑니다.
@@ -160,3 +174,9 @@ if (collected.length) {
   console.log("\n신규 없음 (전부 이미 수집됐거나 매칭 0건)");
 }
 saveSeen(seen);
+
+// 전 피드 실패는 "신규 없음"과 다른 상태다 — cron에서 조용히 묻히지 않게 실패로 종료.
+if (okFeeds === 0) {
+  console.error("모든 피드 수집에 실패했습니다. 네트워크 연결을 확인하세요.");
+  process.exit(1);
+}
